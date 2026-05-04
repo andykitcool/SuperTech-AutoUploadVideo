@@ -1,0 +1,10 @@
+bin/
+obj/
+.vscode/
+.vs/
+*.user
+*.suo
+*.log
+*.db
+*.sqlite
+*.sqlite3
