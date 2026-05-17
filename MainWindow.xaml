@@ -194,8 +194,9 @@
                                   RowHeight="38"
                                   Margin="0 12 0 0">
                             <DataGrid.Columns>
-                                <DataGridTextColumn Header="文件名" Binding="{Binding FileName}" Width="250" />
-                                <DataGridTextColumn Header="节目" Binding="{Binding DisplayProgram}" Width="170" />
+                                <DataGridTextColumn Header="文件名" Binding="{Binding FileName}" Width="220" />
+                                <DataGridTextColumn Header="节目号" Binding="{Binding ProgramNumber, StringFormat=D3}" Width="68" />
+                                <DataGridTextColumn Header="节目名" Binding="{Binding ProgramName}" Width="140" />
                                 <DataGridTextColumn Header="大小" Binding="{Binding DisplaySize}" Width="88" />
                                 <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="92" />
                                 <DataGridTemplateColumn Header="进度" Width="190">
@@ -263,18 +264,20 @@
                     </TabItem>
 
                     <TabItem Header="日志">
-                        <Grid Margin="0 12 0 0">
-                            <TextBox x:Name="LogBox"
-                                     IsReadOnly="True"
-                                     TextWrapping="Wrap"
-                                     AcceptsReturn="True"
-                                     VerticalScrollBarVisibility="Auto"
-                                     HorizontalScrollBarVisibility="Auto"
-                                     Background="#0f172a"
-                                     Foreground="#dbeafe"
-                                     BorderThickness="0"
-                                     FontFamily="Consolas" />
-                        </Grid>
+                        <TextBox x:Name="LogBox"
+                                 IsReadOnly="True"
+                                 TextWrapping="Wrap"
+                                 AcceptsReturn="True"
+                                 VerticalScrollBarVisibility="Auto"
+                                 HorizontalScrollBarVisibility="Auto"
+                                 Background="#0f172a"
+                                 Foreground="#dbeafe"
+                                 BorderThickness="0"
+                                 FontFamily="Consolas"
+                                 FontSize="13"
+                                 Padding="12 10"
+                                 Margin="0 12 0 0"
+                                 MinHeight="480" />
                     </TabItem>
                 </TabControl>
             </Grid>

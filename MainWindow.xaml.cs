@@ -28,6 +28,8 @@ public partial class MainWindow : Window
     private readonly Dictionary<long, ICloudUploader> _activeUploaders = new();
     private readonly Dictionary<long, CancellationTokenSource> _uploadCancellations = new();
     private readonly Dictionary<int, StringBuilder> _activityLogs = new();
+    private System.Drawing.Icon? _lastStatusIcon;
+    private string _lastStatusIconColor = "";
     private AppSettings _settings;
     private List<ProgramDto> _programs = new();
 
@@ -141,6 +143,11 @@ public partial class MainWindow : Window
         if (ActivityCombo.SelectedItem is not ActivityDto activity) return;
         _settings.ActivityId = activity.Id;
         SaveSettingsFromUi();
+        // Prune logs for activities we are no longer viewing (keep only current)
+        foreach (var key in _activityLogs.Keys.Where(k => k != activity.Id).ToList())
+        {
+            _activityLogs.Remove(key);
+        }
         ReloadTasksFromQueue();
         RenderCurrentActivityLog();
         await LoadProgramsAsync(activity.Id);
@@ -558,9 +565,26 @@ public partial class MainWindow : Window
             SolidColorBrush b when b.Color == Colors.Green => System.Drawing.Color.SeaGreen,
             _ => System.Drawing.Color.Gray,
         };
-        _notifyIcon.Icon = StatusIconFactory.Create(color);
+        try
+        {
+            var colorKey = color.Name;
+            if (_lastStatusIconColor != colorKey)
+            {
+                var newIcon = StatusIconFactory.Create(color);
+                _notifyIcon.Icon = newIcon;
+                _lastStatusIcon?.Dispose();
+                _lastStatusIcon = newIcon;
+                _lastStatusIconColor = colorKey;
+            }
+        }
+        catch (Exception ex)
+        {
+            App.WriteCrashLog("SetStatus-Icon", ex);
+        }
         _notifyIcon.Text = $"Supertech Auto Upload Video - {text}";
     }
+
+    private const int MaxLogLinesPerActivity = 500;
 
     private void Log(string text)
     {
@@ -573,6 +597,16 @@ public partial class MainWindow : Window
                 _activityLogs[_settings.ActivityId.Value] = log;
             }
             log.Append(line);
+            // Trim log if it exceeds max lines to prevent unbounded memory growth
+            if (log.Length > MaxLogLinesPerActivity * 80)
+            {
+                var excess = log.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+                log.Clear();
+                foreach (var l in excess.Skip(excess.Length - MaxLogLinesPerActivity))
+                {
+                    log.AppendLine(l);
+                }
+            }
         }
         LogBox.AppendText(line);
         LogBox.ScrollToEnd();
@@ -582,7 +616,9 @@ public partial class MainWindow : Window
     {
         if (WindowState == WindowState.Minimized)
         {
-            ShowInTaskbar = true;
+            // Minimize to tray: hide from taskbar, keep tray icon visible
+            ShowInTaskbar = false;
+            Hide();
         }
     }
 
@@ -590,6 +626,7 @@ public partial class MainWindow : Window
     {
         Show();
         WindowState = WindowState.Normal;
+        ShowInTaskbar = true;
         Activate();
     }
 
@@ -598,11 +635,16 @@ public partial class MainWindow : Window
         _monitor.Stop();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
+        _lastStatusIcon?.Dispose();
+        _lastStatusIcon = null;
     }
 }
 
 internal static class StatusIconFactory
 {
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern bool DestroyIcon(IntPtr hIcon);
+
     public static System.Drawing.Icon Create(System.Drawing.Color color)
     {
         using var bitmap = new System.Drawing.Bitmap(32, 32);
@@ -612,6 +654,18 @@ internal static class StatusIconFactory
         graphics.FillEllipse(brush, 4, 4, 24, 24);
         using var pen = new System.Drawing.Pen(System.Drawing.Color.White, 3);
         graphics.DrawEllipse(pen, 4, 4, 24, 24);
-        return System.Drawing.Icon.FromHandle(bitmap.GetHicon());
+
+        var hIcon = bitmap.GetHicon();
+        try
+        {
+            // Clone() creates a deep copy that owns its own data,
+            // so the icon survives after the bitmap is disposed.
+            return (System.Drawing.Icon)System.Drawing.Icon.FromHandle(hIcon).Clone();
+        }
+        finally
+        {
+            // Destroy the temporary HICON that FromHandle doesn't own.
+            DestroyIcon(hIcon);
+        }
     }
 }

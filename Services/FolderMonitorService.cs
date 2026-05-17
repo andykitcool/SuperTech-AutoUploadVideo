@@ -7,6 +7,7 @@ public sealed class FolderMonitorService : IDisposable
     private readonly HashSet<string> _seen = new(StringComparer.OrdinalIgnoreCase);
     private FileSystemWatcher? _watcher;
     private CancellationTokenSource? _cts;
+    private Task? _scanLoopTask;
 
     public event Func<string, Task>? FileReady;
 
@@ -27,12 +28,14 @@ public sealed class FolderMonitorService : IDisposable
         _watcher.Created += OnFileChanged;
         _watcher.Renamed += OnFileChanged;
 
-        _ = Task.Run(() => ScanLoopAsync(folder, _cts.Token));
+        _scanLoopTask = Task.Run(() => ScanLoopAsync(folder, _cts.Token));
     }
 
     public void Stop()
     {
         _cts?.Cancel();
+        _scanLoopTask?.Wait(TimeSpan.FromSeconds(5));
+        _scanLoopTask = null;
         _cts?.Dispose();
         _cts = null;
         if (_watcher != null)
@@ -41,6 +44,7 @@ public sealed class FolderMonitorService : IDisposable
             _watcher.Dispose();
             _watcher = null;
         }
+        lock (_seen) { _seen.Clear(); }
     }
 
     private void OnFileChanged(object sender, FileSystemEventArgs e)
@@ -53,20 +57,44 @@ public sealed class FolderMonitorService : IDisposable
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            foreach (var file in Directory.EnumerateFiles(folder, "*.mp4"))
+            try
             {
-                _ = TryEmitWhenStableAsync(file, cancellationToken);
+                foreach (var file in Directory.EnumerateFiles(folder, "*.mp4"))
+                {
+                    _ = TryEmitWhenStableAsync(file, cancellationToken);
+                }
             }
+            catch (DirectoryNotFoundException) { }
+            catch (UnauthorizedAccessException) { }
+
+            // Prune _seen entries for files that no longer exist
+            PruneMissingFiles();
+
             await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken).ContinueWith(_ => { });
+        }
+    }
+
+    private void PruneMissingFiles()
+    {
+        lock (_seen)
+        {
+            _seen.RemoveWhere(path =>
+            {
+                try { return !File.Exists(path); }
+                catch { return true; }
+            });
         }
     }
 
     private async Task TryEmitWhenStableAsync(string path, CancellationToken cancellationToken)
     {
-        if (!_seen.Add(path)) return;
+        bool added;
+        lock (_seen) { added = _seen.Add(path); }
+        if (!added) return;
+
         if (!await WaitForStableFileAsync(path, cancellationToken))
         {
-            _seen.Remove(path);
+            lock (_seen) { _seen.Remove(path); }
             return;
         }
         if (FileReady != null)
