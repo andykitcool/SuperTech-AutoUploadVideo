@@ -121,13 +121,14 @@ public sealed class FileNameRuleParser
 
         if (DateTime.TryParseExact(normalized, fullFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out recordedAt))
         {
+            recordedAt = DateTime.SpecifyKind(recordedAt, DateTimeKind.Local);
             return true;
         }
 
         var timeText = normalized.Replace("-", ":");
         if (TimeSpan.TryParse(timeText, CultureInfo.InvariantCulture, out var time))
         {
-            recordedAt = datePart.Add(time);
+            recordedAt = DateTime.SpecifyKind(datePart.Add(time), DateTimeKind.Local);
             return true;
         }
 
