@@ -1,3 +1,4 @@
+using System.IO;
 using Qiniu.Http;
 using Qiniu.Storage;
 using Supertech.AutoUploadVideo.Models;
@@ -27,7 +28,7 @@ public sealed class QiniuUploader : ICloudUploader
             if (string.IsNullOrWhiteSpace(init.StorageKey)) throw new InvalidOperationException("缺少云存储 key");
 
             var startedAt = DateTime.UtcNow;
-            var extra = new PutExtra
+            PutExtra CreatePutExtra() => new()
             {
                 MimeType = "video/mp4",
                 ResumeRecordFile = task.ResumeRecordPath,
@@ -45,8 +46,22 @@ public sealed class QiniuUploader : ICloudUploader
                 },
             };
 
-            var uploader = new ResumableUploader(new Config());
-            HttpResult result = uploader.UploadFile(task.FilePath, init.StorageKey, init.UploadToken, extra);
+            HttpResult UploadFile()
+            {
+                var uploader = new ResumableUploader(new Config());
+                return uploader.UploadFile(task.FilePath, init.StorageKey, init.UploadToken, CreatePutExtra());
+            }
+
+            var result = UploadFile();
+            if (IsInvalidResumeRecord(result))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                DeleteResumeRecord(task.ResumeRecordPath);
+                startedAt = DateTime.UtcNow;
+                progress.Report(new UploadProgress(0, task.FileSize, 0, 0));
+                result = UploadFile();
+            }
+
             if (result.Code is >= 200 and < 300)
             {
                 progress.Report(new UploadProgress(task.FileSize, task.FileSize, 100, 0));
@@ -54,6 +69,26 @@ public sealed class QiniuUploader : ICloudUploader
             }
             throw new InvalidOperationException($"Qiniu upload failed: {result.Code} {result.Text}");
         }, cancellationToken);
+    }
+
+    private static bool IsInvalidResumeRecord(HttpResult result)
+    {
+        return result.Code == -3
+            && result.Text?.Contains("invalid file", StringComparison.OrdinalIgnoreCase) == true;
+    }
+
+    private static void DeleteResumeRecord(string? resumeRecordPath)
+    {
+        if (string.IsNullOrWhiteSpace(resumeRecordPath)) return;
+
+        try
+        {
+            File.Delete(resumeRecordPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidOperationException($"无法清除损坏的 Qiniu 断点记录：{resumeRecordPath}", ex);
+        }
     }
 
     public void Pause() => _paused = true;
