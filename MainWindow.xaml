@@ -70,6 +70,13 @@
             <Setter Property="FontSize" Value="12" />
             <Setter Property="TextWrapping" Value="Wrap" />
         </Style>
+
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="{StaticResource InkBrush}" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Margin" Value="0 0 0 8" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
     </Window.Resources>
 
     <Grid Margin="18">
@@ -131,6 +138,14 @@
                         </DockPanel>
                         <TextBlock Text="请选择 OBS 保存 .mp4 视频的目录。"
                                    Style="{StaticResource HintText}" Margin="0 8 0 20" />
+
+                        <TextBlock Text="上传模式" Style="{StaticResource SectionTitle}" />
+                        <CheckBox x:Name="ParseFileNameBeforeUploadBox"
+                                  Content="解析文件名后上传"
+                                  Checked="SettingsCheckbox_Changed"
+                                  Unchecked="SettingsCheckbox_Changed" />
+                        <TextBlock Text="勾选时按文件名规则解析，解析失败进入待处理；不勾选时直接用编号自动入队，并从视频元数据读取录制时间。"
+                                   Style="{StaticResource HintText}" Margin="0 0 0 20" />
 
                         <TextBlock Text="文件名规则" Style="{StaticResource SectionTitle}" />
                         <TextBox x:Name="PatternBox" LostFocus="SettingsInput_LostFocus" />

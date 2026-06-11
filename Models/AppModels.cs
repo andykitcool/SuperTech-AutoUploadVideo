@@ -60,6 +60,7 @@ public sealed class AppSettings
     public string WatchFolder { get; set; } = "";
     public int? ActivityId { get; set; }
     public string FileNamePattern { get; set; } = "{节目号}-{节目名}-{录制时间}";
+    public bool ParseFileNameBeforeUpload { get; set; } = true;
     public bool AutoStartMonitor { get; set; }
 }
 

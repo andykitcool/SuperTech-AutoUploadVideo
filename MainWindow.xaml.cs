@@ -21,6 +21,7 @@ public partial class MainWindow : Window
     private readonly AppSettingsService _settingsService = new();
     private readonly ApiClient _apiClient = new();
     private readonly FileNameRuleParser _parser = new();
+    private readonly VideoMetadataReader _metadataReader = new();
     private readonly FolderMonitorService _monitor = new();
     private readonly CloudUploaderFactory _uploaderFactory = new();
     private readonly UploadQueueRepository _queue;
@@ -77,6 +78,7 @@ public partial class MainWindow : Window
             : new SolidColorBrush(System.Windows.Media.Color.FromRgb(204, 251, 241));
         WatchFolderBox.Text = _settings.WatchFolder;
         PatternBox.Text = _settings.FileNamePattern;
+        ParseFileNameBeforeUploadBox.IsChecked = _settings.ParseFileNameBeforeUpload;
         _apiClient.Configure(_settings.ServerUrl, _settings.AccessToken);
     }
 
@@ -84,6 +86,7 @@ public partial class MainWindow : Window
     {
         _settings.WatchFolder = WatchFolderBox.Text.Trim();
         _settings.FileNamePattern = PatternBox.Text.Trim();
+        _settings.ParseFileNameBeforeUpload = ParseFileNameBeforeUploadBox.IsChecked == true;
         _settings.ActivityId = (ActivityCombo.SelectedItem as ActivityDto)?.Id ?? _settings.ActivityId;
         _settingsService.Save(_settings);
         _apiClient.Configure(_settings.ServerUrl, _settings.AccessToken);
@@ -183,10 +186,16 @@ public partial class MainWindow : Window
         SaveSettingsFromUi();
     }
 
+    private void SettingsCheckbox_Changed(object sender, RoutedEventArgs e)
+    {
+        SaveSettingsFromUi();
+    }
+
     private async void SaveConfiguration_Click(object sender, RoutedEventArgs e)
     {
         SaveSettingsFromUi();
-        Log($"配置已保存：目录={_settings.WatchFolder}；规则={_settings.FileNamePattern}");
+        var modeText = _settings.ParseFileNameBeforeUpload ? "解析文件名" : "全自动";
+        Log($"配置已保存：目录={_settings.WatchFolder}；模式={modeText}；规则={_settings.FileNamePattern}");
         await ReparseReviewTasksAsync(autoUploadReadyTasks: true);
     }
 
@@ -219,6 +228,67 @@ public partial class MainWindow : Window
         return result.ToString();
     }
 
+    private async Task<TaskProgramInfo> CreateTaskInfoAsync(FileInfo file, int activityId, long? excludeTaskId = null)
+    {
+        if (_settings.ParseFileNameBeforeUpload)
+        {
+            var parsed = _parser.Parse(_settings.FileNamePattern, file.Name);
+            var program = _parser.MatchProgram(parsed, _programs);
+            var hasParsedProgram = parsed.ProgramNumber.HasValue || !string.IsNullOrWhiteSpace(parsed.ProgramName);
+            if (parsed.Error is not null || !hasParsedProgram)
+            {
+                return new TaskProgramInfo(parsed, program, UploadTaskStatus.NeedsReview, parsed.Error ?? "未解析到节目号或节目名");
+            }
+
+            var message = program is null ? "已解析节目，上传时将在管理端自动创建或更新" : "已匹配节目，等待上传";
+            return new TaskProgramInfo(parsed, program, UploadTaskStatus.Ready, message);
+        }
+
+        if (_programs.Count == 0)
+        {
+            await LoadProgramsAsync(activityId);
+        }
+
+        var programNumber = GetNextAutoProgramNumber(activityId, excludeTaskId);
+        var programCode = programNumber.ToString("D3");
+        var metadata = await _metadataReader.ReadRecordedAtAsync(file.FullName);
+        var parsedInfo = new ParsedVideoInfo
+        {
+            ProgramNumber = programNumber,
+            ProgramName = programCode,
+            RecordedAt = metadata.RecordedAt,
+            RecordedAtText = metadata.RecordedAt?.ToString("yyyy-MM-dd HH:mm:ss"),
+        };
+        var metadataMessage = metadata.RecordedAt.HasValue
+            ? $"已读取录制时间 {metadata.RecordedAt:yyyy-MM-dd HH:mm:ss}"
+            : metadata.Error ?? "未读取到录制时间";
+        return new TaskProgramInfo(
+            parsedInfo,
+            null,
+            UploadTaskStatus.Ready,
+            $"全自动模式：已使用编号 {programCode}，{metadataMessage}");
+    }
+
+    private int GetNextAutoProgramNumber(int activityId, long? excludeTaskId)
+    {
+        var maxProgramNumber = _programs
+            .Select(p => p.SequenceNumber)
+            .DefaultIfEmpty(0)
+            .Max();
+        var maxTaskNumber = Tasks
+            .Where(t => t.ActivityId == activityId && (!excludeTaskId.HasValue || t.Id != excludeTaskId.Value))
+            .Select(t => t.ProgramNumber ?? 0)
+            .DefaultIfEmpty(0)
+            .Max();
+        return Math.Max(maxProgramNumber, maxTaskNumber) + 1;
+    }
+
+    private sealed record TaskProgramInfo(
+        ParsedVideoInfo Parsed,
+        ProgramDto? Program,
+        UploadTaskStatus Status,
+        string Message);
+
     private async Task ReparseReviewTasksAsync(bool autoUploadReadyTasks)
     {
         if (_settings.ActivityId is null) return;
@@ -235,24 +305,24 @@ public partial class MainWindow : Window
                      && File.Exists(t.FilePath)).ToList())
         {
             var file = new FileInfo(task.FilePath);
-            var parsed = _parser.Parse(_settings.FileNamePattern, file.Name);
-            var program = _parser.MatchProgram(parsed, _programs);
-            var hasParsedProgram = parsed.ProgramNumber.HasValue || !string.IsNullOrWhiteSpace(parsed.ProgramName);
-            if (parsed.Error is not null || !hasParsedProgram)
+            var taskInfo = await CreateTaskInfoAsync(file, _settings.ActivityId.Value, excludeTaskId: task.Id);
+            if (taskInfo.Status != UploadTaskStatus.Ready)
             {
-                task.Message = parsed.Error ?? "未解析到节目号或节目名";
+                task.Message = taskInfo.Message;
                 _queue.UpdateTask(task);
                 continue;
             }
 
             task.FileName = file.Name;
             task.FileSize = file.Length;
-            task.ProgramId = program?.Id;
-            task.ProgramNumber = parsed.ProgramNumber;
-            task.ProgramName = parsed.ProgramName ?? program?.Name;
-            task.RecordedAt = parsed.RecordedAt;
+            task.ProgramId = taskInfo.Program?.Id;
+            task.ProgramNumber = taskInfo.Parsed.ProgramNumber;
+            task.ProgramName = taskInfo.Parsed.ProgramName ?? taskInfo.Program?.Name;
+            task.RecordedAt = taskInfo.Parsed.RecordedAt;
             task.Status = UploadTaskStatus.Ready;
-            task.Message = program is null ? "已用新规则重新解析，上传时将在管理端自动创建或更新" : "已用新规则重新匹配节目";
+            task.Message = _settings.ParseFileNameBeforeUpload
+                ? (taskInfo.Program is null ? "已用新规则重新解析，上传时将在管理端自动创建或更新" : "已用新规则重新匹配节目")
+                : taskInfo.Message;
             _queue.UpdateTask(task);
             readyTasks.Add(task);
             reparsedCount++;
@@ -316,16 +386,17 @@ public partial class MainWindow : Window
             {
                 if (existingTask.ActivityId == _settings.ActivityId.Value && existingTask.Status == UploadTaskStatus.NeedsReview)
                 {
-                    var parsedExisting = _parser.Parse(_settings.FileNamePattern, file.Name);
-                    if (parsedExisting.Error is null && (parsedExisting.ProgramNumber.HasValue || !string.IsNullOrWhiteSpace(parsedExisting.ProgramName)))
+                    var existingTaskInfo = await CreateTaskInfoAsync(file, _settings.ActivityId.Value, excludeTaskId: existingTask.Id);
+                    if (existingTaskInfo.Status == UploadTaskStatus.Ready)
                     {
-                        var existingProgram = _parser.MatchProgram(parsedExisting, _programs);
-                        existingTask.ProgramId = existingProgram?.Id;
-                        existingTask.ProgramNumber = parsedExisting.ProgramNumber;
-                        existingTask.ProgramName = parsedExisting.ProgramName ?? existingProgram?.Name;
-                        existingTask.RecordedAt = parsedExisting.RecordedAt;
+                        existingTask.ProgramId = existingTaskInfo.Program?.Id;
+                        existingTask.ProgramNumber = existingTaskInfo.Parsed.ProgramNumber;
+                        existingTask.ProgramName = existingTaskInfo.Parsed.ProgramName ?? existingTaskInfo.Program?.Name;
+                        existingTask.RecordedAt = existingTaskInfo.Parsed.RecordedAt;
                         existingTask.Status = UploadTaskStatus.Ready;
-                        existingTask.Message = existingProgram is null ? "已用当前规则重新解析，上传时将在管理端自动创建或更新" : "已用当前规则重新匹配节目";
+                        existingTask.Message = _settings.ParseFileNameBeforeUpload
+                            ? (existingTaskInfo.Program is null ? "已用当前规则重新解析，上传时将在管理端自动创建或更新" : "已用当前规则重新匹配节目")
+                            : existingTaskInfo.Message;
                         _queue.UpdateTask(existingTask);
                         ReloadTasksFromQueue();
                         await UploadTaskAsync(existingTask);
@@ -334,22 +405,19 @@ public partial class MainWindow : Window
                 return;
             }
 
-            var parsed = _parser.Parse(_settings.FileNamePattern, file.Name);
-            var program = _parser.MatchProgram(parsed, _programs);
-            var hasParsedProgram = parsed.ProgramNumber.HasValue || !string.IsNullOrWhiteSpace(parsed.ProgramName);
+            var taskInfo = await CreateTaskInfoAsync(file, _settings.ActivityId.Value);
             var task = new UploadTaskItem
             {
                 FilePath = file.FullName,
                 FileName = file.Name,
                 FileSize = file.Length,
                 ActivityId = _settings.ActivityId.Value,
-                ProgramId = program?.Id,
-                ProgramNumber = parsed.ProgramNumber,
-                ProgramName = parsed.ProgramName ?? program?.Name,
-                RecordedAt = parsed.RecordedAt,
-                Status = parsed.Error is null && hasParsedProgram ? UploadTaskStatus.Ready : UploadTaskStatus.NeedsReview,
-                Message = parsed.Error
-                    ?? (program is null ? "已解析节目，上传时将在管理端自动创建或更新" : "已匹配节目，等待上传"),
+                ProgramId = taskInfo.Program?.Id,
+                ProgramNumber = taskInfo.Parsed.ProgramNumber,
+                ProgramName = taskInfo.Parsed.ProgramName ?? taskInfo.Program?.Name,
+                RecordedAt = taskInfo.Parsed.RecordedAt,
+                Status = taskInfo.Status,
+                Message = taskInfo.Message,
             };
             task.Id = _queue.AddTask(task);
             Tasks.Insert(0, task);

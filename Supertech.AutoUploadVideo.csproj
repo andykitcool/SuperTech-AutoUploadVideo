@@ -16,4 +16,11 @@
     <PackageReference Include="Qiniu" Version="8.0.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="tools\ffprobe.exe">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>tools\ffprobe.exe</Link>
+    </Content>
+  </ItemGroup>
+
 </Project>
